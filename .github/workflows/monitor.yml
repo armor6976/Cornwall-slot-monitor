@@ -72,7 +72,7 @@ jobs:
                       timeout=20000
                   )
               except Exception:
-                  print("Booking heading not detected; continuing.")
+                  print("Booking section heading was not detected.")
 
               page.wait_for_timeout(5000)
 
@@ -87,21 +87,15 @@ jobs:
           else:
               booking_text = body_text
 
-          # Normalize whitespace so Waitwhile's mobile date buttons
-          # don't appear as Mon\n\n28\n\nSep.
+          # Turn line breaks and repeated spaces into normal spaces.
           clean_text = re.sub(r"\s+", " ", booking_text)
 
-          short_date_pattern = (
+          # Only detect the compact date buttons:
+          # Mon 28 Sep, Tue 29 Sep, Wed 30 Sep, etc.
+          date_pattern = (
               r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"
               r"\d{1,2}\s+"
               r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b"
-          )
-
-          long_date_pattern = (
-              r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
-              r",?\s+"
-              r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
-              r"\s+\d{1,2}\b"
           )
 
           time_pattern = (
@@ -110,10 +104,7 @@ jobs:
           )
 
           dates = sorted(
-              set(
-                  re.findall(short_date_pattern, clean_text)
-                  + re.findall(long_date_pattern, clean_text)
-              )
+              set(re.findall(date_pattern, clean_text))
           )
 
           times = sorted(
@@ -131,26 +122,50 @@ jobs:
           print("Current dates:", dates)
           print("Current times:", times)
 
-          if not STATE_FILE.exists():
+          # If the old state uses the previous formatting,
+          # replace it with a clean baseline instead of alerting.
+          reset_baseline = False
+
+          if STATE_FILE.exists():
+              try:
+                  previous = json.loads(
+                      STATE_FILE.read_text()
+                  )
+
+                  old_dates = previous.get("dates", [])
+
+                  if any(
+                      "\n" in date
+                      or "," in date
+                      for date in old_dates
+                  ):
+                      reset_baseline = True
+
+              except Exception:
+                  reset_baseline = True
+          else:
+              reset_baseline = True
+
+          if reset_baseline:
               STATE_FILE.write_text(
                   json.dumps(current, indent=2)
               )
 
-              print("Initial baseline saved.")
+              print("Clean baseline saved.")
+              print("No alert sent.")
               raise SystemExit(0)
 
-          try:
-              previous = json.loads(
-                  STATE_FILE.read_text()
-              )
-          except Exception:
-              previous = {
-                  "dates": [],
-                  "times": []
-              }
+          previous = json.loads(
+              STATE_FILE.read_text()
+          )
 
-          previous_dates = set(previous.get("dates", []))
-          previous_times = set(previous.get("times", []))
+          previous_dates = set(
+              previous.get("dates", [])
+          )
+
+          previous_times = set(
+              previous.get("times", [])
+          )
 
           current_dates = set(dates)
           current_times = set(times)
@@ -169,31 +184,30 @@ jobs:
           print("New times:", new_times)
 
           if new_dates or new_times:
-              message_parts = [
+
+              parts = [
                   "🚨 **CORNWALL SAMPLE STORE AVAILABILITY DETECTED**"
               ]
 
               if new_dates:
-                  message_parts.append(
-                      "📅 New date(s): " + ", ".join(new_dates)
+                  parts.append(
+                      "📅 New date(s): "
+                      + ", ".join(new_dates)
                   )
 
               if new_times:
-                  message_parts.append(
-                      "⏰ New time(s): " + ", ".join(new_times)
+                  parts.append(
+                      "⏰ New time(s): "
+                      + ", ".join(new_times)
                   )
 
-              message_parts.append(
+              parts.append(
                   "\nBOOK NOW:\n" + URL
               )
 
-              message = "\n".join(message_parts)
-
               payload = json.dumps({
-                  "content": message
+                  "content": "\n".join(parts)
               })
-
-              print("Availability detected. Sending Discord alert...")
 
               result = subprocess.run(
                   [
@@ -213,22 +227,15 @@ jobs:
               )
 
               if result.returncode != 0:
-                  print("Discord alert FAILED.")
-                  print("curl stderr:", result.stderr)
-                  print("curl stdout:", result.stdout)
-
-                  # Do NOT save the new state if the alert failed.
-                  # This ensures the next check tries to notify again.
+                  print("Discord notification failed.")
+                  print(result.stderr)
                   raise SystemExit(1)
 
-              print("✅ Discord alert sent successfully.")
+              print("✅ Discord notification sent.")
 
           else:
               print("No new availability detected.")
 
-          # Only update state after either:
-          # 1) no change, or
-          # 2) the Discord alert was successfully sent.
           STATE_FILE.write_text(
               json.dumps(current, indent=2)
           )
