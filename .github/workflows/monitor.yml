@@ -1,0 +1,19 @@
+name: Cornwall Slot Monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send test Discord alert
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -H "Content-Type: application/json" \
+          -d '{"content":"🚨 TEST: Cornwall Sample Store monitor is working."}' \
+          "$DISCORD_WEBHOOK_URL"
