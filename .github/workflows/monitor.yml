@@ -39,7 +39,7 @@ jobs:
           import json
           import os
           import re
-          import urllib.request
+          import subprocess
           from pathlib import Path
 
           from playwright.sync_api import sync_playwright
@@ -51,17 +51,14 @@ jobs:
           STATE_FILE = STATE_DIR / "state.json"
           STATE_DIR.mkdir(exist_ok=True)
 
+          print("Opening Waitwhile...")
+
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
 
               page = browser.new_page(
-                  viewport={
-                      "width": 390,
-                      "height": 844
-                  }
+                  viewport={"width": 390, "height": 844}
               )
-
-              print("Opening Waitwhile...")
 
               page.goto(
                   URL,
@@ -75,15 +72,11 @@ jobs:
                       timeout=20000
                   )
               except Exception:
-                  print(
-                      "Booking heading was not detected, "
-                      "but continuing with page contents."
-                  )
+                  print("Booking heading not detected; continuing.")
 
               page.wait_for_timeout(5000)
 
               body_text = page.locator("body").inner_text()
-
               browser.close()
 
           if "Select date and time" in body_text:
@@ -93,6 +86,10 @@ jobs:
               )[1]
           else:
               booking_text = body_text
+
+          # Normalize whitespace so Waitwhile's mobile date buttons
+          # don't appear as Mon\n\n28\n\nSep.
+          clean_text = re.sub(r"\s+", " ", booking_text)
 
           short_date_pattern = (
               r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"
@@ -114,25 +111,15 @@ jobs:
 
           dates = sorted(
               set(
-                  re.findall(
-                      short_date_pattern,
-                      booking_text
-                  )
-                  +
-                  re.findall(
-                      long_date_pattern,
-                      booking_text
-                  )
+                  re.findall(short_date_pattern, clean_text)
+                  + re.findall(long_date_pattern, clean_text)
               )
           )
 
           times = sorted(
               set(
-                  match.upper()
-                  for match in re.findall(
-                      time_pattern,
-                      booking_text
-                  )
+                  x.upper()
+                  for x in re.findall(time_pattern, clean_text)
               )
           )
 
@@ -146,10 +133,7 @@ jobs:
 
           if not STATE_FILE.exists():
               STATE_FILE.write_text(
-                  json.dumps(
-                      current,
-                      indent=2
-                  )
+                  json.dumps(current, indent=2)
               )
 
               print("Initial baseline saved.")
@@ -165,13 +149,8 @@ jobs:
                   "times": []
               }
 
-          previous_dates = set(
-              previous.get("dates", [])
-          )
-
-          previous_times = set(
-              previous.get("times", [])
-          )
+          previous_dates = set(previous.get("dates", []))
+          previous_times = set(previous.get("times", []))
 
           current_dates = set(dates)
           current_times = set(times)
@@ -184,6 +163,11 @@ jobs:
               current_times - previous_times
           )
 
+          print("Previous dates:", sorted(previous_dates))
+          print("Previous times:", sorted(previous_times))
+          print("New dates:", new_dates)
+          print("New times:", new_times)
+
           if new_dates or new_times:
               message_parts = [
                   "🚨 **CORNWALL SAMPLE STORE AVAILABILITY DETECTED**"
@@ -191,64 +175,69 @@ jobs:
 
               if new_dates:
                   message_parts.append(
-                      "📅 New date(s): "
-                      + ", ".join(new_dates)
+                      "📅 New date(s): " + ", ".join(new_dates)
                   )
 
               if new_times:
                   message_parts.append(
-                      "⏰ New time(s): "
-                      + ", ".join(new_times)
+                      "⏰ New time(s): " + ", ".join(new_times)
                   )
 
               message_parts.append(
                   "\nBOOK NOW:\n" + URL
               )
 
-              message = "\n".join(
-                  message_parts
-              )
+              message = "\n".join(message_parts)
 
               payload = json.dumps({
                   "content": message
-              }).encode("utf-8")
+              })
 
-              request = urllib.request.Request(
-                  WEBHOOK,
-                  data=payload,
-                  headers={
-                      "Content-Type": "application/json"
-                  },
-                  method="POST"
+              print("Availability detected. Sending Discord alert...")
+
+              result = subprocess.run(
+                  [
+                      "curl",
+                      "--fail-with-body",
+                      "--silent",
+                      "--show-error",
+                      "--retry", "2",
+                      "--retry-delay", "2",
+                      "-H", "Content-Type: application/json",
+                      "-H", "User-Agent: Mozilla/5.0",
+                      "-d", payload,
+                      WEBHOOK
+                  ],
+                  capture_output=True,
+                  text=True
               )
 
-              urllib.request.urlopen(
-                  request,
-                  timeout=30
-              )
+              if result.returncode != 0:
+                  print("Discord alert FAILED.")
+                  print("curl stderr:", result.stderr)
+                  print("curl stdout:", result.stdout)
 
-              print("🚨 NEW AVAILABILITY FOUND")
-              print("New dates:", new_dates)
-              print("New times:", new_times)
-              print("Discord notification sent.")
+                  # Do NOT save the new state if the alert failed.
+                  # This ensures the next check tries to notify again.
+                  raise SystemExit(1)
+
+              print("✅ Discord alert sent successfully.")
 
           else:
-              print(
-                  "No new availability detected."
-              )
+              print("No new availability detected.")
 
+          # Only update state after either:
+          # 1) no change, or
+          # 2) the Discord alert was successfully sent.
           STATE_FILE.write_text(
-              json.dumps(
-                  current,
-                  indent=2
-              )
+              json.dumps(current, indent=2)
           )
 
           print("Latest state saved.")
           PY
 
       - name: Save latest availability state
-        if: always()
+        if: success()
         uses: actions/cache/save@v4
         with:
           path: .monitor-state
