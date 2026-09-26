@@ -41,6 +41,7 @@ jobs:
           import re
           import urllib.request
           from pathlib import Path
+
           from playwright.sync_api import sync_playwright
 
           URL = "https://waitwhile.com/locations/cornwallsamplestore/time"
@@ -52,20 +53,43 @@ jobs:
 
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
+
               page = browser.new_page(
-                  viewport={"width": 390, "height": 844}
+                  viewport={
+                      "width": 390,
+                      "height": 844
+                  }
               )
 
-              page.goto(URL, wait_until="networkidle", timeout=120000)
+              print("Opening Waitwhile...")
+
+              page.goto(
+                  URL,
+                  wait_until="domcontentloaded",
+                  timeout=60000
+              )
+
+              try:
+                  page.wait_for_selector(
+                      "text=Select date and time",
+                      timeout=20000
+                  )
+              except Exception:
+                  print(
+                      "Booking heading was not detected, "
+                      "but continuing with page contents."
+                  )
+
               page.wait_for_timeout(5000)
 
               body_text = page.locator("body").inner_text()
+
               browser.close()
 
-          # Concentrate on the booking portion of the page.
           if "Select date and time" in body_text:
               booking_text = body_text.split(
-                  "Select date and time", 1
+                  "Select date and time",
+                  1
               )[1]
           else:
               booking_text = body_text
@@ -77,9 +101,10 @@ jobs:
           )
 
           long_date_pattern = (
-              r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+"
-              r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+"
-              r"\d{1,2}\b"
+              r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+              r",?\s+"
+              r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+              r"\s+\d{1,2}\b"
           )
 
           time_pattern = (
@@ -87,30 +112,47 @@ jobs:
               r"(?:AM|PM|am|pm)\b"
           )
 
-          dates = sorted(set(
-              re.findall(short_date_pattern, booking_text)
-              + re.findall(long_date_pattern, booking_text)
-          ))
+          dates = sorted(
+              set(
+                  re.findall(
+                      short_date_pattern,
+                      booking_text
+                  )
+                  +
+                  re.findall(
+                      long_date_pattern,
+                      booking_text
+                  )
+              )
+          )
 
-          times = sorted(set(
-              x.upper()
-              for x in re.findall(time_pattern, booking_text)
-          ))
+          times = sorted(
+              set(
+                  match.upper()
+                  for match in re.findall(
+                      time_pattern,
+                      booking_text
+                  )
+              )
+          )
 
           current = {
               "dates": dates,
-              "times": times,
+              "times": times
           }
 
-          # First successful run becomes the baseline.
+          print("Current dates:", dates)
+          print("Current times:", times)
+
           if not STATE_FILE.exists():
               STATE_FILE.write_text(
-                  json.dumps(current, indent=2)
+                  json.dumps(
+                      current,
+                      indent=2
+                  )
               )
 
               print("Initial baseline saved.")
-              print("Dates:", dates)
-              print("Times:", times)
               raise SystemExit(0)
 
           try:
@@ -120,11 +162,16 @@ jobs:
           except Exception:
               previous = {
                   "dates": [],
-                  "times": [],
+                  "times": []
               }
 
-          previous_dates = set(previous.get("dates", []))
-          previous_times = set(previous.get("times", []))
+          previous_dates = set(
+              previous.get("dates", [])
+          )
+
+          previous_times = set(
+              previous.get("times", [])
+          )
 
           current_dates = set(dates)
           current_times = set(times)
@@ -138,39 +185,41 @@ jobs:
           )
 
           if new_dates or new_times:
-              parts = [
-                  "🚨 **CORNWALL SAMPLE STORE AVAILABILITY**"
+              message_parts = [
+                  "🚨 **CORNWALL SAMPLE STORE AVAILABILITY DETECTED**"
               ]
 
               if new_dates:
-                  parts.append(
+                  message_parts.append(
                       "📅 New date(s): "
                       + ", ".join(new_dates)
                   )
 
               if new_times:
-                  parts.append(
+                  message_parts.append(
                       "⏰ New time(s): "
                       + ", ".join(new_times)
                   )
 
-              parts.append(
-                  "\nBook now:\n" + URL
+              message_parts.append(
+                  "\nBOOK NOW:\n" + URL
               )
 
-              message = "\n".join(parts)
+              message = "\n".join(
+                  message_parts
+              )
 
-              data = json.dumps({
+              payload = json.dumps({
                   "content": message
               }).encode("utf-8")
 
               request = urllib.request.Request(
                   WEBHOOK,
-                  data=data,
+                  data=payload,
                   headers={
                       "Content-Type": "application/json"
                   },
-                  method="POST",
+                  method="POST"
               )
 
               urllib.request.urlopen(
@@ -178,21 +227,24 @@ jobs:
                   timeout=30
               )
 
-              print("NEW AVAILABILITY FOUND")
+              print("🚨 NEW AVAILABILITY FOUND")
               print("New dates:", new_dates)
               print("New times:", new_times)
-              print("Discord alert sent.")
+              print("Discord notification sent.")
 
           else:
-              print("No new availability detected.")
-              print("Current dates:", dates)
-              print("Current times:", times)
+              print(
+                  "No new availability detected."
+              )
 
-          # Always save the latest state so we do not
-          # repeatedly notify about the same slot.
           STATE_FILE.write_text(
-              json.dumps(current, indent=2)
+              json.dumps(
+                  current,
+                  indent=2
+              )
           )
+
+          print("Latest state saved.")
           PY
 
       - name: Save latest availability state
