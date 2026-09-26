@@ -10,10 +10,129 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Send test Discord alert
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install chromium
+
+      - name: Check Waitwhile availability
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          curl -H "Content-Type: application/json" \
-          -d '{"content":"🚨 TEST: Cornwall Sample Store monitor is working."}' \
-          "$DISCORD_WEBHOOK_URL"
+          python - <<'PY'
+          import os
+          import json
+          import urllib.request
+          from playwright.sync_api import sync_playwright
+
+          URL = "https://waitwhile.com/locations/cornwallsamplestore/time"
+          WEBHOOK = os.environ["DISCORD_WEBHOOK_URL"]
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              page = browser.new_page(
+                  viewport={"width": 390, "height": 844}
+              )
+
+              page.goto(URL, wait_until="networkidle", timeout=120000)
+              page.wait_for_timeout(5000)
+
+              text = page.locator("body").inner_text()
+
+              browser.close()
+
+          # Current known baseline dates.
+          # We want to alert if:
+          # 1. a new date appears, or
+          # 2. Waitwhile shows an available appointment time.
+
+          known_dates = [
+              "Mon 28 Sep",
+              "Tue 29 Sep",
+              "Monday, Sep 28",
+              "Tuesday, Sep 29",
+          ]
+
+          no_times_phrases = [
+              "No available times this day",
+              "No available times this day.",
+          ]
+
+          new_date_detected = False
+
+          # Detect likely newly added dates after Sep 29.
+          future_markers = [
+              "Wed 30 Sep",
+              "Wednesday, Sep 30",
+              "Thu 1 Oct",
+              "Thursday, Oct 1",
+              "Fri 2 Oct",
+              "Friday, Oct 2",
+              "Sat 3 Oct",
+              "Saturday, Oct 3",
+              "Sun 4 Oct",
+              "Sunday, Oct 4",
+          ]
+
+          for marker in future_markers:
+              if marker in text:
+                  new_date_detected = True
+                  break
+
+          no_times = any(phrase in text for phrase in no_times_phrases)
+
+          # Also look for obvious appointment-time buttons.
+          time_detected = False
+
+          import re
+          matches = re.findall(
+              r"\b(?:1[0-2]|[1-9]):[0-5][0-9]\s?(?:AM|PM|am|pm)\b",
+              text
+          )
+
+          if matches:
+              time_detected = True
+
+          if new_date_detected or time_detected:
+              reason = []
+
+              if new_date_detected:
+                  reason.append("a new booking date appeared")
+
+              if time_detected:
+                  reason.append(
+                      "appointment time(s) appeared: "
+                      + ", ".join(sorted(set(matches))[:10])
+                  )
+
+              message = (
+                  "🚨 **CORNWALL SAMPLE STORE AVAILABILITY DETECTED**\n"
+                  + "\n".join(f"• {x}" for x in reason)
+                  + "\n\nOpen Waitwhile now:\n"
+                  + URL
+              )
+
+              data = json.dumps({"content": message}).encode()
+
+              request = urllib.request.Request(
+                  WEBHOOK,
+                  data=data,
+                  headers={"Content-Type": "application/json"},
+                  method="POST",
+              )
+
+              urllib.request.urlopen(request, timeout=30)
+
+              print("Availability detected — Discord alert sent.")
+
+          else:
+              print("No new date or appointment time detected.")
+          PY
